@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { canSaveOffline, isSavedOffline, saveOffline } from './offline'
+import { makeBackup, mergeRecords, parseBackup, readRecords, STORAGE_KEY } from './records'
+import type { WorkRecord } from './records'
 import './App.css'
 
 type IconName = 'study' | 'book' | 'work' | 'exercise' | 'coffee' | 'more' | 'home' | 'chart' | 'settings' | 'play' | 'pause' | 'stop' | 'clock' | 'watch' | 'left' | 'right' | 'up' | 'down' | 'check'
@@ -50,22 +53,6 @@ function PlantClock() {
   </svg>
 }
 
-type WorkRecord = { id: string; taskName: string; startedAt: string; endedAt: string; elapsedMs: number }
-const STORAGE_KEY = 'my-work-timer.records.v1'
-function readRecords(): WorkRecord[] {
-  const raw = localStorage.getItem(STORAGE_KEY)
-  if (raw === null) return []
-  const value: unknown = JSON.parse(raw)
-  if (!Array.isArray(value) || !value.every((record: unknown) => {
-    if (typeof record !== 'object' || record === null) return false
-    const item = record as Partial<WorkRecord>
-    return typeof item.id === 'string' && typeof item.taskName === 'string'
-      && typeof item.startedAt === 'string' && Number.isFinite(Date.parse(item.startedAt))
-      && typeof item.endedAt === 'string' && Number.isFinite(Date.parse(item.endedAt))
-      && typeof item.elapsedMs === 'number' && Number.isFinite(item.elapsedMs) && item.elapsedMs >= 0
-  })) throw new Error('Invalid saved records')
-  return value as WorkRecord[]
-}
 function formatTime(ms: number, short = false) {
   const s = Math.floor(Math.max(0, ms) / 1000)
   const parts = [Math.floor(s / 3600), Math.floor(s % 3600 / 60), s % 60]
@@ -98,6 +85,9 @@ function App() {
   const [records, setRecords] = useState<WorkRecord[]>(history.records)
   const [error, setError] = useState(history.error)
   const [notice, setNotice] = useState('')
+  const [backupNotice, setBackupNotice] = useState('')
+  const backupInput = useRef<HTMLInputElement>(null)
+  const [offlineState, setOfflineState] = useState<'idle' | 'saving' | 'saved' | 'error'>(() => isSavedOffline() ? 'saved' : 'idle')
   const session = useRef<Session | null>(null)
   const [period, setPeriod] = useState<'day' | 'month' | 'year'>('day')
   const [date, setDate] = useState(() => new Date())
@@ -181,6 +171,48 @@ function App() {
     else if (period === 'day' && detail) setDate(new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset))
     else setDate(new Date(date.getFullYear(), date.getMonth() + offset, 1))
   }
+  function exportBackup() {
+    setBackupNotice('')
+    try {
+      const saved = readRecords()
+      const url = URL.createObjectURL(new Blob([makeBackup(saved)], { type: 'application/json' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `work-timer-backup-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.append(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
+      setError('')
+      setBackupNotice(`${saved.length}件の記録を書き出しました。`)
+    } catch { setError('記録を書き出せませんでした。ブラウザーの保存設定をご確認ください。') }
+  }
+  async function enableOffline() {
+    setOfflineState('saving')
+    try {
+      await saveOffline()
+      setOfflineState('saved')
+    } catch { setOfflineState('error') }
+  }
+  async function importBackup(file: File) {
+    setBackupNotice('')
+    let imported: WorkRecord[]
+    try {
+      if (file.size > 10_000_000) throw new Error('Backup too large')
+      imported = parseBackup(await file.text())
+    } catch {
+      setError('作業タイマーで書き出したバックアップファイルを選んでください。')
+      return
+    }
+    try {
+      const saved = readRecords()
+      const next = mergeRecords(saved, imported)
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+      setRecords(next)
+      setError('')
+      setBackupNotice(`${next.length - saved.length}件の記録を追加しました。`)
+    } catch { setError('記録を取り込めませんでした。ブラウザーの保存設定や空き容量をご確認ください。') }
+  }
   const filtered = records.filter(r => {
     const d = new Date(r.startedAt)
     return period === 'year' ? d.getFullYear() === date.getFullYear() : period === 'month' ? d.getFullYear() === date.getFullYear() && d.getMonth() === date.getMonth() : dayKey(d) === dayKey(date)
@@ -240,7 +272,42 @@ function App() {
       <p className="record-note">記録は開始した日に集計されます</p>
     </section>}
 
-    {screen === 'settings' && <section className="settings-screen"><header className="page-heading"><h1>設定</h1></header><h2 className="section-label">やることの管理</h2><p className="settings-description">矢印でホームの並び順を変更できます</p><div className="settings-list">{taskOrder.map((name, i) => <div className="settings-row" key={name}><Badge name={name}/><span>{name}</span><button className="icon-button" aria-label={`${name}を上に移動`} disabled={i === 0} onClick={() => moveTask(i, -1)}><Icon name="up" size={19}/></button><button className="icon-button" aria-label={`${name}を下に移動`} disabled={i === taskOrder.length - 1} onClick={() => moveTask(i, 1)}><Icon name="down" size={19}/></button></div>)}</div><div className="storage-info"><Icon name="check" size={19}/><div><strong>作業の記録は自動保存</strong><p>終了した作業は、このブラウザーに保存されます。</p></div></div></section>}
+    {screen === 'settings' && <section className="settings-screen">
+      <header className="page-heading"><h1>設定</h1></header>
+      <h2 className="section-label">やることの管理</h2>
+      <p className="settings-description">矢印でホームの並び順を変更できます</p>
+      <div className="settings-list">{taskOrder.map((name, i) => <div className="settings-row" key={name}>
+        <Badge name={name}/><span>{name}</span>
+        <button className="icon-button" aria-label={`${name}を上に移動`} disabled={i === 0} onClick={() => moveTask(i, -1)}><Icon name="up" size={19}/></button>
+        <button className="icon-button" aria-label={`${name}を下に移動`} disabled={i === taskOrder.length - 1} onClick={() => moveTask(i, 1)}><Icon name="down" size={19}/></button>
+      </div>)}</div>
+      <div className="storage-info"><Icon name="check" size={19}/><div><strong>作業の記録は自動保存</strong><p>終了した作業は、このブラウザーに保存されます。</p></div></div>
+      <div className="backup-panel">
+        <h2 className="section-label">記録のバックアップ</h2>
+        <p>記録をファイルに保存できます。取り込んでも、今ある記録は消えません。</p>
+        <div className="backup-actions">
+          <button type="button" onClick={exportBackup}>記録を書き出す</button>
+          <button type="button" onClick={() => backupInput.current?.click()}>記録を取り込む</button>
+          <input ref={backupInput} type="file" accept=".json,application/json" hidden onChange={event => {
+            const file = event.currentTarget.files?.[0]
+            event.currentTarget.value = ''
+            if (file) void importBackup(file)
+          }}/>
+        </div>
+        {backupNotice && <p className="backup-notice" role="status">{backupNotice}</p>}
+      </div>
+      {canSaveOffline() && <div className="backup-panel">
+        <h2 className="section-label">オフラインで使う</h2>
+        <p>このアプリを端末に保存します。ホーム画面に追加している場合は、アイコンから開いて保存してください。</p>
+        <div className="backup-actions">
+          <button type="button" onClick={() => void enableOffline()} disabled={offlineState === 'saving' || offlineState === 'saved'}>
+            {offlineState === 'saving' ? '保存中…' : offlineState === 'saved' ? '端末に保存済み' : 'オフライン用に保存'}
+          </button>
+        </div>
+        {offlineState === 'saved' && <p className="backup-notice" role="status">機内モードにして、アプリを開けるか確認してください。</p>}
+        {offlineState === 'error' && <p className="storage-error" role="alert">端末に保存できませんでした。インターネットに接続してからもう一度お試しください。</p>}
+      </div>}
+    </section>}
 
     {!sessionScreen && <nav className="bottom-nav" aria-label="メインメニュー">{([{ key: 'home', label: 'ホーム', icon: 'home' }, { key: 'records', label: '記録', icon: 'chart' }, { key: 'settings', label: '設定', icon: 'settings' }] as const).map(item => <button key={item.key} className={screen === item.key ? 'nav-active' : ''} aria-current={screen === item.key ? 'page' : undefined} onClick={() => { setScreen(item.key); setDetail(false) }}><Icon name={item.icon} size={23}/><small>{item.label}</small></button>)}</nav>}
   </main>
