@@ -115,6 +115,12 @@ button:focus-visible, input:focus-visible { outline: 3px solid #aac9ff; outline-
 .storage-info { display: flex; align-items: flex-start; gap: 9px; color: #8ba597; background: #eff7f0; border-radius: 17px; padding: 17px; margin-top: 25px; }
 .storage-info strong { font-size: 12px; color: #688375; font-weight: 600; }
 .storage-info p { font-size: 11px; line-height: 1.8; margin: 6px 0 0; color: #8b9a91; }
+.backup-panel { margin-top: 20px; padding: 16px; border-radius: 17px; background: #fff; }
+.backup-panel p { margin: 8px 0 12px; color: #616674; font-size: 12px; line-height: 1.7; }
+.backup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.backup-actions button { flex: 1 0 auto; min-height: 44px; padding: 8px 12px; border: 0; border-radius: 12px; background: #edf4ff; color: #2356a2; font-size: 12px; font-weight: 600; }
+.backup-actions button:disabled { background: #eff2f6; color: #646c78; }
+.backup-panel .backup-notice { margin-bottom: 0; color: #466b51; }
 .save-notice { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #769680; background: #edf7ec; border-radius: 12px; padding: 10px; margin: -5px 0 14px; }
 .storage-error { color: #a92c40; background: #fff0f1; padding: 12px; border-radius: 12px; font-size: 12px; line-height: 1.7; }
 @media (min-width: 600px) { .app { box-shadow: 0 0 65px #bcae9f17; border-inline: 1px solid #efe8e3; } }
